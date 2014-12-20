@@ -13,8 +13,6 @@ $f3->mset(array(
 	"PACKAGE" => "Phproject",
 ));
 
-require_once "app/functions.php";
-
 // Check if already installed
 if(is_file("config.ini")) {
 	$f3->set("success", "Phproject is already installed.");
@@ -49,17 +47,19 @@ if($f3->get("POST")) {
 		);
 
 		// Run installation scripts
-		$install_db = file_get_contents("database.sql");
+		$install_db = file_get_contents("db/database.sql");
 		$db->exec(explode(";", $install_db));
 
 		// Create admin user
 		$f3->set("db.instance", $db);
 		$security = \Helper\Security::instance();
 		$user = new \Model\User;
-		$user->username = $post["user-username"];
+		$user->role = "admin";
+		$user->name = "Admin";
+		$user->username = $post["user-username"] ?: "admin";
 		$user->email = $post["user-email"];
 		$user->salt = $security->salt();
-		$user->password = $security->hash($post["user-password"], $user->salt);
+		$user->password = $security->hash($post["user-password"] ?: "admin", $user->salt);
 		$user->save();
 
 	} catch(PDOException $e) {
@@ -75,9 +75,14 @@ if($f3->get("POST")) {
 		mkdir("log", 0777, true);
 	}
 
+	$config = "[globals]";
+	if(!empty($post["language"])) {
+		$config .= "\nLANGUAGE={$post['language']}";
+	}
+
 	// Write configuration file
 	file_put_contents("config.ini",
-"[globals]
+"$config
 
 ; Database
 db.host={$post['db-host']}
@@ -90,6 +95,7 @@ db.name={$post['db-name']}
 site.name={$post['site-name']}
 site.timezone={$post['site-timezone']}
 site.public_registration={$post['site-public_registration']}
+site.db_sessions=1
 
 ; Email
 mail.from={$post['mail-from']}

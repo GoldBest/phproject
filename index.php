@@ -69,6 +69,29 @@ $f3->route("GET /minify/@type/@files", function(Base $f3, $args) {
 	echo Web::instance()->minify($args["files"]);
 }, $f3->get("cache_expire.minify"));
 
+// Initialize plugins
+$plugins = scandir("app/plugin");
+foreach($plugins as &$plugin) {
+	if($plugin != "." && $plugin != ".." && is_file("app/plugin/$plugin/base.php")) {
+		$plugin = "Plugin\\" . str_replace(" ", "_", ucwords(str_replace("_", " ", $plugin))) . "\\Base";
+		$plugin = $plugin::instance();
+		if(!$plugin->_installed()) {
+			try {
+				$plugin->_install();
+			} catch (Exception $e) {
+				$f3->set("error", "Failed to install plugin " . $plugin->_package() . ": " . $e->getMessage());
+			}
+		}
+		try {
+			$plugin->_load();
+		} catch (Exception $e) {
+			$f3->set("error", "Failed to initialize plugin " . $plugin->_package() . ": " . $e->getMessage());
+		}
+	} else {
+		unset($plugin);
+	}
+}
+
 // Set up session handler
 if($f3->get("site.db_sessions")) {
 	new \DB\SQL\Session($f3->get("db.instance"), "session", false);

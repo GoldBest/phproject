@@ -19,23 +19,45 @@ class Admin extends \Controller {
 			$f3->set("success", "Cache cleared successfully.");
 		}
 
-		// Gather some stats
 		$db = $f3->get("db.instance");
 
-		$db->exec("SELECT id FROM user WHERE deleted_date IS NULL AND role != 'group'");
-		$f3->set("count_user", $db->count());
-		$db->exec("SELECT id FROM issue WHERE deleted_date IS NULL");
-		$f3->set("count_issue", $db->count());
-		$db->exec("SELECT id FROM issue_update");
-		$f3->set("count_issue_update", $db->count());
-		$db->exec("SELECT id FROM issue_comment");
-		$f3->set("count_issue_comment", $db->count());
+		if($f3->get("POST.action") == "updatedb") {
+			if(file_exists("db/".$f3->get("POST.version").".sql")) {
+				$update_db = file_get_contents("db/".$f3->get("POST.version").".sql");
+				$db->exec(explode(";", $update_db));
+				$f3->set("success", " Database updated to version: ". $f3->get("POST.version"));
+			} else {
+				$f3->set("error", " Database file not found for version: ". $f3->get("POST.version"));
+			}
+		}
+
+		// Gather some stats
+		$result = $db->exec("SELECT COUNT(id) AS `count` FROM user WHERE deleted_date IS NULL AND role != 'group'");
+		$f3->set("count_user", $result[0]["count"]);
+		$result = $db->exec("SELECT COUNT(id) AS `count` FROM issue WHERE deleted_date IS NULL");
+		$f3->set("count_issue", $result[0]["count"]);
+		$result = $db->exec("SELECT COUNT(id) AS `count` FROM issue_update");
+		$f3->set("count_issue_update", $result[0]["count"]);
+		$result = $db->exec("SELECT COUNT(id) AS `count` FROM issue_comment");
+		$f3->set("count_issue_comment", $result[0]["count"]);
+		$result = @$db->exec("SELECT value as version FROM config WHERE attribute = 'version'");
+		if(!empty($result)) {
+			$f3->set("version", $result[0]["version"]);
+		} else {
+			$f3->set("version", '1.0.0');
+		}
+		$db_files = scandir("db");
+		foreach ($db_files as $file) {
+			$file = substr($file, 0, -4);
+			if(version_compare($file, $f3->get('version')) >0) {
+				$f3->set("newer_version", $file);
+				break;
+			}
+		}
 
 		if($f3->get("CACHE") == "apc") {
 			$f3->set("apc_stats", apc_cache_info("user", true));
 		}
-
-		$f3->set("db_stats", $db->exec("SHOW STATUS WHERE Variable_name LIKE 'Delayed_%' OR Variable_name LIKE 'Table_lock%' OR Variable_name = 'Uptime'"));
 
 		$this->_render("admin/index.html");
 	}
@@ -59,21 +81,6 @@ class Admin extends \Controller {
 
 		if($user->id) {
 			$f3->set("title", "Edit User");
-			if($f3->get("POST")) {
-				foreach($f3->get("POST") as $i=>$val) {
-					if($i == "password" && !empty($val)) {
-						$security = \Helper\Security::instance();
-						$user->salt = $security->salt();
-						$user->password = $security->hash($val, $user->salt);
-					} elseif($i == "salt" || $i == "api_key") {
-						// don't change the salt or API key
-					} elseif($user->$i != $val && $i != "password"){
-						$user->$i = $val;
-					}
-					$user->save();
-					$f3->set("success", "User changes saved.");
-				}
-			}
 			$f3->set("this_user", $user);
 			$this->_render("admin/users/edit.html");
 		} else {
@@ -86,29 +93,84 @@ class Admin extends \Controller {
 		$f3->set("title", "New User");
 		$f3->set("menuitem", "admin");
 
-		if($f3->get("POST")) {
-			$user = new \Model\User();
-			$user->username = $f3->get("POST.username");
-			$user->email = $f3->get("POST.email");
-			$user->name = $f3->get("POST.name");
-			$security = \Helper\Security::instance();
-			$user->salt = $security->salt();
-			$user->password = $security->hash($f3->get("POST.password"), $user->salt);
-			$user->api_key = $security->salt_sha1();
-			$user->role = $f3->get("POST.role");
-			$user->task_color = ltrim($f3->get("POST.task_color"), "#");
-			$user->created_date = $this->now();
-			$user->save();
-			if($user->id) {
-				$f3->reroute("/admin/users#" . $user->id);
-			} else {
-				$f3->error(500, "Failed to save user.");
-			}
+		$f3->set("rand_color", sprintf("#%02X%02X%02X", mt_rand(0, 0xFF), mt_rand(0, 0xFF), mt_rand(0, 0xFF)));
+		$this->_render("admin/users/edit.html");
+	}
+
+	public function user_save($f3, $params) {
+		$f3->set("menuitem", "admin");
+
+		$security = \Helper\Security::instance();
+		$user = new \Model\User;
+
+		// Load current user if set, otherwise validate fields for new user
+		if($user_id = $f3->get("POST.user_id")) {
+			$f3->set("title", "Edit User");
+			$user->load($user_id);
+			$f3->set("this_user", $user);
 		} else {
-			$f3->set("title", "Add User");
-			$f3->set("rand_color", sprintf("#%06X", mt_rand(0, 0xFFFFFF)));
-			$this->_render("admin/users/new.html");
+			$f3->set("title", "New User");
+
+			// Verify a password is being set
+			if(!$f3->get("POST.password")) {
+				$f3->set("error", "User already exists with this username");
+				$this->_render("admin/users/edit.html");
+				return;
+			}
+
+			// Check for existing users with same info
+			$user->load(array("username = ?", $f3->get("POST.username")));
+			if($user->id) {
+				$f3->set("error", "User already exists with this username");
+				$this->_render("admin/users/edit.html");
+				return;
+			}
+
+			$user->load(array("email = ?", $f3->get("POST.email")));
+			if($user->id) {
+				$f3->set("error", "User already exists with this email address");
+				$this->_render("admin/users/edit.html");
+				return;
+			}
+
+			// Set new user fields
+			$user->api_key = $security->salt_sha1();
+			$user->created_date = $this->now();
 		}
+
+		// Validate password if being set
+		if($f3->get("POST.password")) {
+			if($f3->get("POST.password") != $f3->get("POST.password_confirm")) {
+				$f3->set("error", "Passwords do not match");
+				$this->_render("admin/users/edit.html");
+				return;
+			}
+			if(strlen($f3->get("POST.password")) < 6) {
+				$f3->set("error", "Passwords must be at least 6 characters");
+				$this->_render("admin/users/edit.html");
+				return;
+			}
+
+			// Check if giving user temporary or permanent password
+			if($f3->get("POST.temporary_password")) {
+				$user->salt = null;
+				$user->password = $security->hash($f3->get("POST.password"), "");
+			} else {
+				$user->salt = $security->salt();
+				$user->password = $security->hash($f3->get("POST.password"), $user->salt);
+			}
+		}
+
+		// Set basic fields
+		$user->username = $f3->get("POST.username");
+		$user->email = $f3->get("POST.email");
+		$user->name = $f3->get("POST.name");
+		$user->role = $f3->get("POST.role");
+		$user->task_color = ltrim($f3->get("POST.task_color"), "#");
+
+		// Save user
+		$user->save();
+		$f3->reroute("/admin/users#" . $user->id);
 	}
 
 	public function user_delete($f3, $params) {
@@ -154,8 +216,9 @@ class Admin extends \Controller {
 		if($f3->get("POST")) {
 			$group = new \Model\User();
 			$group->name = $f3->get("POST.name");
+			$group->username = \Web::instance()->slug($group->name);
 			$group->role = "group";
-			$group->task_color = sprintf("%06X", mt_rand(0, 0xFFFFFF));
+			$group->task_color = sprintf("%02X%02X%02X", mt_rand(0, 0xFF), mt_rand(0, 0xFF), mt_rand(0, 0xFF));
 			$group->created_date = $this->now();
 			$group->save();
 			$f3->reroute("/admin/groups");
@@ -186,7 +249,7 @@ class Admin extends \Controller {
 		$group->load($params["id"]);
 		$group->delete();
 		if($f3->get("AJAX")) {
-			$this->_printJson(array("deleted" => 1));
+			$this->_printJson(array("deleted" => 1) + $group->cast());
 		} else {
 			$f3->reroute("/admin/groups");
 		}
@@ -227,6 +290,7 @@ class Admin extends \Controller {
 				break;
 			case "change_title":
 				$group->name = trim($f3->get("POST.name"));
+				$group->username = \Web::instance()->slug($group->name);
 				$group->save();
 				$this->_printJson(array("changed" => 1));
 				break;

@@ -95,7 +95,7 @@ class User extends \Controller {
 		$f3 = \Base::instance();
 
 		// Get theme list
-		$hidden_themes = array("backlog", "style", "taskboard", "datepicker", "jquery-ui-1.10.3", "bootstrap-tagsinput");
+		$hidden_themes = array("backlog", "style", "taskboard", "datepicker", "jquery-ui-1.10.3", "bootstrap-tagsinput", "emote");
 		$themes = array();
 		foreach (glob("css/*.css") as $file) {
 			$name = pathinfo($file, PATHINFO_FILENAME);
@@ -131,9 +131,13 @@ class User extends \Controller {
 			// Update password
 			if($security->hash($post["old_pass"], $user->salt) == $user->password) {
 				if(strlen($post["new_pass"]) >= 6) {
-					$user->salt = $security->salt();
-					$user->password = $security->hash($post["new_pass"], $user->salt);
-					$f3->set("success", "Password updated successfully.");
+					if($post["new_pass"] == $post["new_pass_confirm"]) {
+						$user->salt = $security->salt();
+						$user->password = $security->hash($post["new_pass"], $user->salt);
+						$f3->set("success", "Password updated successfully.");
+					} else {
+						$f3->set("error", "New passwords do not match");
+					}
 				} else {
 					$f3->set("error", "New password must be at least 6 characters.");
 				}
@@ -243,11 +247,133 @@ class User extends \Controller {
 			$f3->set("title", $user->name);
 			$f3->set("this_user", $user);
 
+
+			// Extra arrays required for bulk update
+			$status = new \Model\Issue\Status;
+			$f3->set("statuses", $status->find(null, null, $f3->get("cache_expire.db")));
+
+			$f3->set("users", $user->getAll());
+			$f3->set("groups", $user->getAllGroups());
+
+			$priority = new \Model\Issue\Priority;
+			$f3->set("priorities", $priority->find(null, array("order" => "value DESC"), $f3->get("cache_expire.db")));
+
+			$sprint = new \Model\Sprint;
+			$f3->set("sprints", $sprint->find(array("end_date >= ?", $this->now(false)), array("order" => "start_date ASC")));
+
+			$type = new \Model\Issue\Type;
+			$f3->set("types", $type->find(null, null, $f3->get("cache_expire.db")));
+
+
 			$issue = new \Model\Issue\Detail;
 			$issues = $issue->paginate(0, 100, array("closed_date IS NULL AND deleted_date IS NULL AND (owner_id = ? OR author_id = ?)", $user->id, $user->id));
 			$f3->set("issues", $issues);
 
 			$this->_render("user/single.html");
+		} else {
+			$f3->error(404);
+		}
+	}
+
+	/**
+	 * Convert a flat issue array to a tree array. Child issues are added to
+	 * the 'children' key in each issue.
+	 * @param  array $array Flat array of issues, including all parents needed
+	 * @return array Tree array where each issue contains its child issues
+	 */
+	protected function _buildTree($array) {
+		$tree = array();
+
+		// Create an associative array with each key being the ID of the item
+		foreach($array as $k => &$v) {
+			$tree[$v['id']] = &$v;
+		}
+
+		// Loop over the array and add each child to their parent
+		foreach($tree as $k => &$v) {
+			if(empty($v['parent_id'])) {
+				continue;
+			}
+			$tree[$v['parent_id']]['children'][] = &$v;
+		}
+
+		// Loop over the array again and remove any items that don't have a parent of 0;
+		foreach($tree as $k => &$v) {
+			if(empty($v['parent_id'])) {
+				continue;
+			}
+			unset($tree[$k]);
+		}
+
+		return $tree;
+	}
+
+	public function single_tree($f3, $params) {
+		$this->_requireLogin();
+
+		$user = new \Model\User;
+		$user->load(array("username = ? AND deleted_date IS NULL", $params["username"]));
+
+		if($user->id) {
+			$f3->set("title", $user->name);
+			$f3->set("this_user", $user);
+
+			// Load assigned issues
+			$issue = new \Model\Issue\Detail;
+			$assigned = $issue->find(array("closed_date IS NULL AND deleted_date IS NULL AND owner_id = ?", $user->id));
+
+			// Build issue list
+			$issues = array();
+			$assigned_ids = array();
+			$missing_ids = array();
+			foreach($assigned as $iss) {
+				$issues[] = $iss->cast();
+				$assigned_ids[] = $iss->id;
+			}
+			foreach($issues as $iss) {
+				if($iss["parent_id"] && !in_array($iss["parent_id"], $assigned_ids)) {
+					$missing_ids[] = $iss["parent_id"];
+				}
+			}
+			do {
+				$parents = $issue->find("id IN (" . implode(",", $missing_ids) . ")");
+				foreach($parents as $iss) {
+					if (($key = array_search($iss->id, $missing_ids)) !== false) {
+						unset($missing_ids[$key]);
+					}
+					$issues[] = $iss->cast();
+					$assigned_ids[] = $iss->id;
+					if($iss->parent_id && !in_array($iss->parent_id, $assigned_ids)) {
+						$missing_ids[] = $iss->parent_id;
+					}
+				}
+			} while(!empty($missing_ids));
+
+			// Convert list to tree
+			$tree = $this->_buildTree($issues);
+
+			// Helper function for recursive tree rendering
+			$recurDisplay = function($issue) use(&$recurDisplay) {
+				echo "<li>";
+				if(!empty($issue["id"])) {
+					echo '<a href="issues/'.$issue['id'].'">#'.$issue["id"].' - '.$issue["name"].'</a> ';
+					echo '<small class="text-muted">&ndash; '.$issue["author_name"].'</small>';
+				}
+				if(!empty($issue["children"])) {
+					echo "<ul>";
+					foreach($issue["children"] as $iss) {
+						$recurDisplay($iss);
+					}
+					echo "</ul>";
+				}
+				echo "</li>";
+			};
+			$f3->set("recurDisplay", $recurDisplay);
+
+			// Render view
+			$f3->set("issues", $tree);
+			$this->_render("user/single/tree.html");
+
 		} else {
 			$f3->error(404);
 		}
