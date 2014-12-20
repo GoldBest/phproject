@@ -2,6 +2,10 @@
 	<check if="{{ !empty(@issue) }}">
 		<a href="issues/{{ @issue.id }}" class="close"><span aria-hidden="true">&times;</span><span class="sr-only">{{ @dict.close }}</span></a>
 		<input type="hidden" name="id" value="{{ @issue.id }}">
+		<!-- Hashed original values used in saving updates -->
+		<repeat group="{{ @issue->cast() }}" key="{{ @key }}" value="{{ @value }}">
+			<input type="hidden" name="hash_{{ @key }}" value="{{ md5(@value) }}">
+		</repeat>
 	</check>
 	<check if="{{ empty(@issue) }}">
 		<true>
@@ -15,7 +19,7 @@
 	<div class="form-group">
 		<label class="col-md-2 control-label">{{ @dict.cols.title }}</label>
 		<div class="col-md-10">
-			<input type="text" class="form-control" name="name" value="{{ empty(@issue) ? "" : @issue.name }}" required>
+			<input type="text" class="form-control" name="name" value="{{ empty(@issue) ? "" : htmlentities(@issue.name) }}" required>
 		</div>
 	</div>
 	<div class="form-group">
@@ -68,7 +72,7 @@
 		<div class="col-md-10">
 			<select class="form-control input-sm" name="owner_id">
 				<option value="0">{{ @dict.not_assigned }}</option>
-				<option value="{{ @user.id }}" selected>{{ @user.name }}</option>
+				<option value="{{ @user.id }}" {{ empty(@issue) ? 'selected' : '' }}>{{ @user.name }}</option>
 				<optgroup label="Groups">
 					<repeat group="{{ @groups }}" value="{{ @group }}">
 						<check if="{{ !empty(@issue) && @issue.owner_id == @group.id }}">
@@ -106,9 +110,16 @@
 		</div>
 	</check>
 	<div class="form-group">
-		<label class="col-md-2 control-label label-sm">{{ @dict.cols.remaining_hours }}</label>
+		<label class="col-md-2 control-label label-sm">{{ empty(@issue) ? @dict.cols.planned_hours : @dict.cols.remaining_hours }}</label>
 		<div class="col-md-6">
 			<input class="form-control input-sm" type="text" name="hours_remaining" value="{{ empty(@issue) ? "" : @issue.hours_remaining }}">
+		</div>
+	</div>
+
+	<div class="form-group">
+		<label class="col-md-2 control-label label-sm">{{ @dict.cols.start_date }}</label>
+		<div class="col-md-6">
+			<input class="form-control input-sm" id="start_date" type="text" name="start_date"  value="{{ empty(@issue) ? "" : @issue.start_date }}">
 		</div>
 	</div>
 

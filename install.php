@@ -13,8 +13,6 @@ $f3->mset(array(
 	"PACKAGE" => "Phproject",
 ));
 
-require_once "app/functions.php";
-
 // Check if already installed
 if(is_file("config.ini")) {
 	$f3->set("success", "Phproject is already installed.");
@@ -35,10 +33,8 @@ if(!function_exists("imagecreatetruecolor")) {
 	$f3->set("warning", "GD library is not available. Profile pictures and file thumbnails will not work until it is installed.");
 }
 
-/**
- * Run installation process
- */
-function run_install() {
+// Run installation process if post data received
+if($f3->get("POST")) {
 	$f3 = \Base::instance();
 	$post = $f3->get("POST");
 
@@ -51,19 +47,20 @@ function run_install() {
 		);
 
 		// Run installation scripts
-		$install_db = file_get_contents("database.sql");
+		$install_db = file_get_contents("db/database.sql");
 		$db->exec(explode(";", $install_db));
 
-		// Update admin user if necessary
-		if(!empty($post["user-password"]) && $post["user-password"] != "admin") {
-			$f3->set("db.instance", $db);
-			$security = \Helper\Security::instance();
-			$user = new \Model\User;
-			$user->load(array("username = ?", "admin"));
-			$user->salt = $security->salt();
-			$user->password = $security->hash($post["user-password"], $user->salt);
-			$user->save();
-		}
+		// Create admin user
+		$f3->set("db.instance", $db);
+		$security = \Helper\Security::instance();
+		$user = new \Model\User;
+		$user->role = "admin";
+		$user->name = "Admin";
+		$user->username = $post["user-username"] ?: "admin";
+		$user->email = $post["user-email"];
+		$user->salt = $security->salt();
+		$user->password = $security->hash($post["user-password"] ?: "admin", $user->salt);
+		$user->save();
 
 	} catch(PDOException $e) {
 		$f3->set("warning", $e->getMessage());
@@ -78,9 +75,14 @@ function run_install() {
 		mkdir("log", 0777, true);
 	}
 
+	$config = "[globals]";
+	if(!empty($post["language"])) {
+		$config .= "\nLANGUAGE={$post['language']}";
+	}
+
 	// Write configuration file
 	file_put_contents("config.ini",
-"[globals]
+"$config
 
 ; Database
 db.host={$post['db-host']}
@@ -92,17 +94,14 @@ db.name={$post['db-name']}
 ; Global site configuration
 site.name={$post['site-name']}
 site.timezone={$post['site-timezone']}
+site.public_registration={$post['site-public_registration']}
+site.db_sessions=1
 
 ; Email
 mail.from={$post['mail-from']}
 ");
 
 	$f3->set("success", "Installation complete.");
-}
-
-// Attempt installation if POST data received
-if($f3->get("POST")) {
-	run_install();
 }
 
 // Render installer template
